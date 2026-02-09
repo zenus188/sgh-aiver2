@@ -205,6 +205,69 @@ CITIES = [
 COACH_STYLES = ["스파르타 코치", "따뜻한 멘토", "게임 마스터"]
 
 
+DATA_DIR = "data"
+HISTORY_PATH = os.path.join(DATA_DIR, "history.json")
+
+
+def _serialize_history(rows: list[dict]) -> list[dict]:
+    serialized = []
+    for row in rows:
+        row_date = row.get("date")
+        if isinstance(row_date, date):
+            date_value = row_date.isoformat()
+        else:
+            date_value = str(row_date)
+        serialized.append(
+            {
+                "date": date_value,
+                "checked": int(row.get("checked", 0)),
+                "mood": int(row.get("mood", 0)),
+            }
+        )
+    return serialized
+
+
+def _deserialize_history(rows: list[dict]) -> list[dict]:
+    deserialized = []
+    for row in rows:
+        try:
+            row_date = date.fromisoformat(str(row.get("date", "")))
+        except ValueError:
+            continue
+        deserialized.append(
+            {
+                "date": row_date,
+                "checked": int(row.get("checked", 0)),
+                "mood": int(row.get("mood", 0)),
+            }
+        )
+    return deserialized
+
+
+def load_history() -> list[dict] | None:
+    if not os.path.exists(HISTORY_PATH):
+        return None
+    try:
+        with open(HISTORY_PATH, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        if not isinstance(data, list):
+            return None
+        return _deserialize_history(data)
+    except Exception:
+        return None
+
+
+def save_history(rows: list[dict]) -> bool:
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(HISTORY_PATH, "w", encoding="utf-8") as file:
+            json.dump(_serialize_history(rows), file, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        st.warning("체크인 기록 저장에 실패했어요. (권한/저장 경로를 확인해주세요)")
+        return False
+
+
 def _seed_demo_history():
     # 최근 6일 샘플 데이터(데모)
     rng = random.Random(20260209)  # 고정 시드(재현 가능)
@@ -225,10 +288,12 @@ def _seed_demo_history():
 
 
 if "history" not in st.session_state:
-    st.session_state.history = _seed_demo_history()
-
-if "last_saved_date" not in st.session_state:
-    st.session_state.last_saved_date = None
+    loaded_history = load_history()
+    if loaded_history is not None:
+        st.session_state.history = loaded_history
+    else:
+        st.session_state.history = _seed_demo_history()
+        save_history(st.session_state.history)
 
 # ----------------------------
 # Check-in UI
@@ -280,6 +345,7 @@ else:
     # 오늘이면 업데이트
     hist[-1] = today_row
 st.session_state.history = hist
+save_history(st.session_state.history)
 
 # ----------------------------
 # 7일 바 차트
