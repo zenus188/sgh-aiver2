@@ -2,6 +2,7 @@
 import os
 import json
 import random
+import calendar
 from datetime import date, timedelta
 
 import requests
@@ -13,8 +14,8 @@ import streamlit as st
 # ----------------------------
 st.set_page_config(page_title="AI 습관 트래커", page_icon="📊", layout="wide")
 
-st.title("📊 AI 습관 트래커")
-st.caption("체크인 → 달성률/차트 → 날씨/강아지 + AI 코치 리포트까지 한 번에!")
+st.title("🗓️ AI 습관 캘린더")
+st.caption("캘린더처럼 한 달을 훑어보고, 오늘의 체크인과 리포트를 한 번에!")
 
 # ----------------------------
 # Sidebar: API Keys
@@ -37,7 +38,7 @@ def get_weather(city: str, api_key: str):
     - 실패 시 None
     """
     if not api_key:
-        return None
+        return _get_weather_fallback(city)
     url = "https://api.openweathermap.org/data/2.5/weather"
     params = {
         "q": city,
@@ -57,6 +58,32 @@ def get_weather(city: str, api_key: str):
             "humidity": int(data["main"]["humidity"]),
             "desc": str(data["weather"][0]["description"]),
             "icon": str(data["weather"][0].get("icon", "")),
+        }
+    except Exception:
+        return _get_weather_fallback(city)
+
+
+def _get_weather_fallback(city: str):
+    """
+    키 없이도 동작하는 간단 날씨 조회 (wttr.in).
+    실패 시 None
+    """
+    url = f"https://wttr.in/{city}"
+    params = {"format": "j1", "lang": "ko"}
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        current = data["current_condition"][0]
+        desc = current["lang_ko"][0]["value"] if current.get("lang_ko") else current["weatherDesc"][0]["value"]
+        return {
+            "city": city,
+            "temp_c": float(current["temp_C"]),
+            "feels_like_c": float(current["FeelsLikeC"]),
+            "humidity": int(current["humidity"]),
+            "desc": str(desc),
+            "icon": "",
         }
     except Exception:
         return None
@@ -230,21 +257,26 @@ if "history" not in st.session_state:
 if "last_saved_date" not in st.session_state:
     st.session_state.last_saved_date = None
 
+if "reports" not in st.session_state:
+    st.session_state.reports = {}
+
+if "tasks" not in st.session_state:
+    st.session_state.tasks = {}
+
 # ----------------------------
 # Check-in UI
 # ----------------------------
 st.subheader("✅ 오늘의 체크인")
 
-left, right = st.columns([1.2, 1])
+left, right = st.columns([1.1, 0.9])
 
 with left:
     st.markdown("**습관 체크**")
     c1, c2 = st.columns(2)
 
-    # 2열 배치: 왼쪽 3개, 오른쪽 2개
     habit_state = {}
     for idx, (key, emoji, label) in enumerate(HABITS):
-        target_col = c1 if idx in (0, 2, 4) else c2  # 0/2/4 left, 1/3 right
+        target_col = c1 if idx % 2 == 0 else c2
         with target_col:
             habit_state[key] = st.checkbox(f"{emoji} {label}", value=False, key=f"habit_{key}")
 
@@ -255,6 +287,20 @@ with right:
     st.markdown("**환경 설정**")
     city = st.selectbox("📍 도시 선택", CITIES, index=0)
     coach_style = st.radio("🎭 코치 스타일", COACH_STYLES, horizontal=False)
+    st.markdown("---")
+    st.markdown("**📝 오늘의 할 일**")
+    task_input = st.text_input("할 일 추가", placeholder="예: 물 2L 마시기")
+    if st.button("➕ 할 일 저장"):
+        if task_input.strip():
+            today_key = str(date.today())
+            st.session_state.tasks.setdefault(today_key, [])
+            st.session_state.tasks[today_key].append(task_input.strip())
+    today_tasks = st.session_state.tasks.get(str(date.today()), [])
+    if today_tasks:
+        for t in today_tasks:
+            st.write(f"- {t}")
+        if st.button("🧹 오늘 할 일 모두 지우기"):
+            st.session_state.tasks[str(date.today())] = []
 
 # ----------------------------
 # Metrics + Save today record
@@ -284,25 +330,79 @@ st.session_state.history = hist
 # ----------------------------
 # 7일 바 차트
 # ----------------------------
-st.subheader("📈 최근 7일 추이")
+st.subheader("🗓️ 월간 캘린더")
 
 df = pd.DataFrame(st.session_state.history).copy()
-df = df.sort_values("date").tail(7)
-df["date_str"] = df["date"].astype(str)
+if not df.empty:
+    df["date"] = pd.to_datetime(df["date"]).dt.date
 
-chart_col1, chart_col2 = st.columns([2, 1])
-with chart_col1:
-    st.bar_chart(df.set_index("date_str")[["checked"]], height=260)
+today = date.today()
+month_start = today.replace(day=1)
+month_last_day = calendar.monthrange(today.year, today.month)[1]
+month_days = [month_start + timedelta(days=i) for i in range(month_last_day)]
+month_df = pd.DataFrame({"date": month_days})
+month_df = month_df.merge(df, on="date", how="left")
+month_df["checked"] = month_df["checked"].fillna(0).astype(int)
+month_df["mood"] = month_df["mood"].fillna(0).astype(int)
+month_df["report"] = month_df["date"].map(st.session_state.reports).fillna("")
+month_df["tasks"] = month_df["date"].map(st.session_state.tasks).fillna("")
 
-with chart_col2:
-    st.dataframe(
-        df[["date_str", "checked", "mood"]].rename(
-            columns={"date_str": "날짜", "checked": "달성(개)", "mood": "기분"}
-        ),
-        use_container_width=True,
-        hide_index=True,
-        height=260,
-    )
+calendar_rows = calendar.Calendar(firstweekday=6).monthdatescalendar(today.year, today.month)
+weekday_labels = ["일", "월", "화", "수", "목", "금", "토"]
+
+header_cols = st.columns(7)
+for idx, label in enumerate(weekday_labels):
+    header_cols[idx].markdown(f"**{label}**")
+
+for week in calendar_rows:
+    week_cols = st.columns(7)
+    for idx, day in enumerate(week):
+        day_data = month_df.loc[month_df["date"] == day]
+        in_month = day.month == today.month
+        checked = int(day_data["checked"].iloc[0]) if not day_data.empty else 0
+        mood_value = int(day_data["mood"].iloc[0]) if not day_data.empty else 0
+        report_text = str(day_data["report"].iloc[0]) if not day_data.empty else ""
+        report_line = report_text.splitlines()[0] if report_text else ""
+        tasks_value = day_data["tasks"].iloc[0] if not day_data.empty else []
+        task_list = tasks_value if isinstance(tasks_value, list) else []
+        task_line = ", ".join(task_list[:2])
+        status = "●" * checked + "○" * (len(HABITS) - checked)
+        mood_label = f"🙂 {mood_value}" if mood_value > 0 else "🙂 -"
+        report_label = f"🧾 {report_line}" if report_line else "🧾 -"
+        task_label = f"✅ {task_line}" if task_line else "✅ -"
+        with week_cols[idx]:
+            st.markdown(
+                f"""
+<div style="padding:10px;border:1px solid #E6E6E6;border-radius:10px;min-height:150px;">
+  <div style="font-size:14px;font-weight:600;opacity:{1 if in_month else 0.35};">
+    {day.day}
+  </div>
+  <div style="margin-top:6px;font-size:12px;opacity:{1 if in_month else 0.35};">
+    {status}
+  </div>
+  <div style="margin-top:6px;font-size:12px;opacity:{1 if in_month else 0.35};">
+    {mood_label}
+  </div>
+  <div style="margin-top:6px;font-size:11px;opacity:{1 if in_month else 0.35};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+    {report_label}
+  </div>
+  <div style="margin-top:6px;font-size:11px;opacity:{1 if in_month else 0.35};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+    {task_label}
+  </div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+st.markdown("#### 📊 이번 달 요약")
+summary_cols = st.columns(3)
+month_checked_sum = int(month_df["checked"].sum())
+month_days_logged = int((month_df["checked"] > 0).sum())
+avg_mood = round(month_df.loc[month_df["mood"] > 0, "mood"].mean() or 0, 1)
+
+summary_cols[0].metric("누적 달성", f"{month_checked_sum}개")
+summary_cols[1].metric("체크인 일수", f"{month_days_logged}일")
+summary_cols[2].metric("평균 기분", f"{avg_mood}/10")
 
 # ----------------------------
 # Weather + Dog + AI Report
@@ -328,6 +428,8 @@ if btn:
             weather=weather_data,
             dog=dog_data,
         )
+        if report:
+            st.session_state.reports[str(today)] = report
 
     # 결과 표시 (2열 카드 + 리포트)
     card1, card2 = st.columns(2)
@@ -376,6 +478,11 @@ if btn:
         f"{report if report else ''}"
     )
     st.code(share_text)
+else:
+    saved_report = st.session_state.reports.get(str(today))
+    if saved_report:
+        st.markdown("### 🧾 오늘의 저장된 리포트")
+        st.markdown(saved_report)
 
 # ----------------------------
 # API 안내
@@ -386,6 +493,7 @@ with st.expander("ℹ️ API 안내 / 트러블슈팅"):
 **1) OpenWeatherMap**
 - 현재 날씨 API 사용: `https://api.openweathermap.org/data/2.5/weather`
 - 파라미터: `q=도시`, `appid=키`, `lang=kr`, `units=metric`
+- API Key가 없으면 `wttr.in`을 통해 기본 날씨를 조회
 - 흔한 실패 원인:
   - API Key 미입력 / 만료
   - 도시명 오타 (예: `Seoul`, `Busan` 등)
