@@ -2,7 +2,6 @@
 import os
 import json
 import random
-import calendar
 from datetime import date, timedelta
 
 import requests
@@ -14,8 +13,8 @@ import streamlit as st
 # ----------------------------
 st.set_page_config(page_title="AI 습관 트래커", page_icon="📊", layout="wide")
 
-st.title("🗓️ AI 습관 캘린더")
-st.caption("캘린더처럼 한 달을 훑어보고, 오늘의 체크인과 리포트를 한 번에!")
+st.title("📊 AI 습관 트래커")
+st.caption("체크인 → 달성률/차트 → 날씨/강아지 + AI 코치 리포트까지 한 번에!")
 
 # ----------------------------
 # Sidebar: API Keys
@@ -206,69 +205,6 @@ CITIES = [
 COACH_STYLES = ["스파르타 코치", "따뜻한 멘토", "게임 마스터"]
 
 
-DATA_DIR = "data"
-HISTORY_PATH = os.path.join(DATA_DIR, "history.json")
-
-
-def _serialize_history(rows: list[dict]) -> list[dict]:
-    serialized = []
-    for row in rows:
-        row_date = row.get("date")
-        if isinstance(row_date, date):
-            date_value = row_date.isoformat()
-        else:
-            date_value = str(row_date)
-        serialized.append(
-            {
-                "date": date_value,
-                "checked": int(row.get("checked", 0)),
-                "mood": int(row.get("mood", 0)),
-            }
-        )
-    return serialized
-
-
-def _deserialize_history(rows: list[dict]) -> list[dict]:
-    deserialized = []
-    for row in rows:
-        try:
-            row_date = date.fromisoformat(str(row.get("date", "")))
-        except ValueError:
-            continue
-        deserialized.append(
-            {
-                "date": row_date,
-                "checked": int(row.get("checked", 0)),
-                "mood": int(row.get("mood", 0)),
-            }
-        )
-    return deserialized
-
-
-def load_history() -> list[dict] | None:
-    if not os.path.exists(HISTORY_PATH):
-        return None
-    try:
-        with open(HISTORY_PATH, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        if not isinstance(data, list):
-            return None
-        return _deserialize_history(data)
-    except Exception:
-        return None
-
-
-def save_history(rows: list[dict]) -> bool:
-    try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(HISTORY_PATH, "w", encoding="utf-8") as file:
-            json.dump(_serialize_history(rows), file, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        st.warning("체크인 기록 저장에 실패했어요. (권한/저장 경로를 확인해주세요)")
-        return False
-
-
 def _seed_demo_history():
     # 최근 6일 샘플 데이터(데모)
     rng = random.Random(20260209)  # 고정 시드(재현 가능)
@@ -289,27 +225,26 @@ def _seed_demo_history():
 
 
 if "history" not in st.session_state:
-    loaded_history = load_history()
-    if loaded_history is not None:
-        st.session_state.history = loaded_history
-    else:
-        st.session_state.history = _seed_demo_history()
-        save_history(st.session_state.history)
+    st.session_state.history = _seed_demo_history()
+
+if "last_saved_date" not in st.session_state:
+    st.session_state.last_saved_date = None
 
 # ----------------------------
 # Check-in UI
 # ----------------------------
 st.subheader("✅ 오늘의 체크인")
 
-left, right = st.columns([1.1, 0.9])
+left, right = st.columns([1.2, 1])
 
 with left:
     st.markdown("**습관 체크**")
     c1, c2 = st.columns(2)
 
+    # 2열 배치: 왼쪽 3개, 오른쪽 2개
     habit_state = {}
     for idx, (key, emoji, label) in enumerate(HABITS):
-        target_col = c1 if idx % 2 == 0 else c2
+        target_col = c1 if idx in (0, 2, 4) else c2  # 0/2/4 left, 1/3 right
         with target_col:
             habit_state[key] = st.checkbox(f"{emoji} {label}", value=False, key=f"habit_{key}")
 
@@ -345,69 +280,29 @@ else:
     # 오늘이면 업데이트
     hist[-1] = today_row
 st.session_state.history = hist
-save_history(st.session_state.history)
 
 # ----------------------------
 # 7일 바 차트
 # ----------------------------
-st.subheader("🗓️ 월간 캘린더")
+st.subheader("📈 최근 7일 추이")
 
 df = pd.DataFrame(st.session_state.history).copy()
-if not df.empty:
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+df = df.sort_values("date").tail(7)
+df["date_str"] = df["date"].astype(str)
 
-today = date.today()
-month_start = today.replace(day=1)
-month_last_day = calendar.monthrange(today.year, today.month)[1]
-month_days = [month_start + timedelta(days=i) for i in range(month_last_day)]
-month_df = pd.DataFrame({"date": month_days})
-month_df = month_df.merge(df, on="date", how="left")
-month_df["checked"] = month_df["checked"].fillna(0).astype(int)
-month_df["mood"] = month_df["mood"].fillna(0).astype(int)
+chart_col1, chart_col2 = st.columns([2, 1])
+with chart_col1:
+    st.bar_chart(df.set_index("date_str")[["checked"]], height=260)
 
-calendar_rows = calendar.Calendar(firstweekday=6).monthdatescalendar(today.year, today.month)
-weekday_labels = ["일", "월", "화", "수", "목", "금", "토"]
-
-header_cols = st.columns(7)
-for idx, label in enumerate(weekday_labels):
-    header_cols[idx].markdown(f"**{label}**")
-
-for week in calendar_rows:
-    week_cols = st.columns(7)
-    for idx, day in enumerate(week):
-        day_data = month_df.loc[month_df["date"] == day]
-        in_month = day.month == today.month
-        checked = int(day_data["checked"].iloc[0]) if not day_data.empty else 0
-        mood_value = int(day_data["mood"].iloc[0]) if not day_data.empty else 0
-        status = "●" * checked + "○" * (len(HABITS) - checked)
-        mood_label = f"🙂 {mood_value}" if mood_value > 0 else "🙂 -"
-        with week_cols[idx]:
-            st.markdown(
-                f"""
-<div style="padding:10px;border:1px solid #E6E6E6;border-radius:10px;min-height:120px;">
-  <div style="font-size:14px;font-weight:600;opacity:{1 if in_month else 0.35};">
-    {day.day}
-  </div>
-  <div style="margin-top:6px;font-size:12px;opacity:{1 if in_month else 0.35};">
-    {status}
-  </div>
-  <div style="margin-top:6px;font-size:12px;opacity:{1 if in_month else 0.35};">
-    {mood_label}
-  </div>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
-st.markdown("#### 📊 이번 달 요약")
-summary_cols = st.columns(3)
-month_checked_sum = int(month_df["checked"].sum())
-month_days_logged = int((month_df["checked"] > 0).sum())
-avg_mood = round(month_df.loc[month_df["mood"] > 0, "mood"].mean() or 0, 1)
-
-summary_cols[0].metric("누적 달성", f"{month_checked_sum}개")
-summary_cols[1].metric("체크인 일수", f"{month_days_logged}일")
-summary_cols[2].metric("평균 기분", f"{avg_mood}/10")
+with chart_col2:
+    st.dataframe(
+        df[["date_str", "checked", "mood"]].rename(
+            columns={"date_str": "날짜", "checked": "달성(개)", "mood": "기분"}
+        ),
+        use_container_width=True,
+        hide_index=True,
+        height=260,
+    )
 
 # ----------------------------
 # Weather + Dog + AI Report
